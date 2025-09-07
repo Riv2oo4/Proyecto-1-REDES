@@ -1,5 +1,3 @@
-# MCP-DNS — README corto
-
 Servidor **Model Context Protocol (MCP)** para diagnóstico de **DNS**, pensado para usarse con cualquier **cliente/anfitrión MCP** (Inspector, tu propio chatbot, etc.).
 
 ---
