@@ -115,16 +115,3 @@ Se abrirá el **MCP Inspector** con el servidor corriendo.
   `pip install -U dnspython cryptography`
 * **Timeout/NoAnswer:** reintenta o prueba otro dominio (firewall/UDP).
 
----
-
-## 6) Estructura mínima del repo
-
-```
-Proyecto-1-REDES/
-├─ MCPLocal/
-│  ├─ servidor.py      # servidor MCP (este)
-│  └─ host_llm.py      # (opcional) host de consola con lenguaje natural
-└─ README.md
-```
-
-Listo. Con esto cualquier compañero puede **instalar, correr** e **integrar** el servidor en su propio chat/cliente MCP.
