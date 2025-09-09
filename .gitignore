@@ -1,0 +1,63 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+.venv/
+.venv*/
+venv/
+env/
+ENV/
+.python-version
+
+# Construcción / empaquetado
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+pip-cache/
+.cache/
+
+# Herramientas / análisis
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# Cobertura
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Logs
+*.log
+*.log.*
+dns_mcp.log.jsonl
+*.jsonl
+
+# Archivos de entorno / secretos
+.env
+.env.*
+*.secret
+secrets*.json
+
+# IDEs / editores
+.vscode/
+.idea/
+*.code-workspace
+
+# SO (Windows / macOS)
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Node (por si acaso)
+node_modules/
+
+# Proyecto local
+workspace/
