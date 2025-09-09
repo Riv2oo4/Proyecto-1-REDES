@@ -1,0 +1,7 @@
+anthropic>=0.18.0
+mcp>=0.1.0
+dnspython>=2.6.1
+cryptography>=42.0.0
+httpx>=0.24.0
+mcp[cli]
+uvicorn

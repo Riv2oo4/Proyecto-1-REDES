@@ -1,10 +1,14 @@
-from __future__ import annotations
-import json, os, random, string, time, socket
+dependencies = [
+    "dnspython>=2.6.1",
+    "cryptography>=42.0.0",
+]
+
+import json, os, random, string, time
 from dataclasses import asdict, dataclass
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.session import ServerSession
+from mcp.server.session import ServerSession 
 
 import dns.resolver
 import dns.name
@@ -13,7 +17,7 @@ import dns.query
 import dns.rdatatype
 import dns.dnssec
 import dns.exception
-
+import dns.flags
 
 LOG_PATH = os.environ.get("DNS_MCP_LOG", "dns_mcp.log.jsonl")
 
@@ -27,7 +31,7 @@ def log_event(event: Dict[str, Any]) -> None:
 
 def to_str_list(rrset) -> List[str]:
     try:
-        return [r.to_text() for r in rrset]
+        return [r.to_text() for r in rrset] if rrset else []
     except Exception:
         return []
 
@@ -54,9 +58,8 @@ def resolve_rr(resolver: dns.resolver.Resolver, name: str, rtype: str):
         return None, f"DNS_ERROR:{type(e).__name__}"
 
 def get_authoritative_ns_ips(domain: str) -> List[str]:
-
     res = make_resolver()
-    ns_rr, err = resolve_rr(res, domain, "NS")
+    ns_rr, _ = resolve_rr(res, domain, "NS")
     if not ns_rr:
         return []
     ips: List[str] = []
@@ -66,20 +69,22 @@ def get_authoritative_ns_ips(domain: str) -> List[str]:
             rr, _ = resolve_rr(res, host, typ)
             if rr:
                 for r in rr:
-                    ip = r.address if hasattr(r, "address") else str(r)
-                    ips.append(ip)
-    return list(dict.fromkeys(ips))  # únicos, preservando orden
+                    ip = getattr(r, "address", None)
+                    ips.append(ip if ip else str(r))
+    vistos, out = set(), []
+    for ip in ips:
+        if ip not in vistos:
+            vistos.add(ip)
+            out.append(ip)
+    return out
 
 def query_authoritative(name: str, rtype: str, ns_ip: str):
-
     q = dns.message.make_query(name, rtype, want_dnssec=True)
-    q.flags &= ~dns.flags.RD  # sin recursión
+    q.flags &= ~dns.flags.RD  
     try:
         resp = dns.query.udp(q, ns_ip, timeout=3.0)
-        # preferimos Answer; si viene vacío, ver Authority
         if resp.answer:
             return resp.answer[0]
-        # a veces el autoritativo delega y solo da NS en authority
         return None
     except Exception:
         return None
@@ -89,6 +94,7 @@ def flatten_rr_text(rrset) -> List[str]:
         return []
     return [r.to_text() for r in rrset]
 
+# Modelos de salida 
 
 @dataclass
 class Hallazgo:
@@ -127,33 +133,32 @@ class ResultadoPropagacion:
     respuestas: Dict[str, Dict[str, Any]]  
     diferencias: Dict[str, Any]
 
+# MCP Server 
 
 mcp = FastMCP("MCP-DNS")
 
-@mcp.tool()
+@mcp.tool(description="Prueba de vida: responde 'pong'.")
 def ping() -> str:
     return "pong"
 
-
-@mcp.tool()
+@mcp.tool(description="Chequeo A/AAAA/NS/SOA (recursivo y autoritativo), wildcard, TTLs y CNAME colgante.")
 def salud_dns(dominio: str) -> Dict[str, Any]:
-
     start = time.time()
     hall: List[Hallazgo] = []
 
     rec = make_resolver()
     a_rr, _ = resolve_rr(rec, dominio, "A")
     aaaa_rr, _ = resolve_rr(rec, dominio, "AAAA")
-    ns_rr, err_ns = resolve_rr(rec, dominio, "NS")
-    soa_rr, err_soa = resolve_rr(rec, dominio, "SOA")
-    cname_rr, _ = resolve_rr(rec, dominio, "CNAME")  #
+    ns_rr, _ = resolve_rr(rec, dominio, "NS")
+    soa_rr, _ = resolve_rr(rec, dominio, "SOA")
+    cname_rr, _ = resolve_rr(rec, dominio, "CNAME")
 
     # Autoritativo
     auth_ips = get_authoritative_ns_ips(dominio)
     auth = {"A": [], "AAAA": [], "NS": [], "SOA": []}
     for typ in ("A", "AAAA", "NS", "SOA"):
         vistas = []
-        for ip in auth_ips[:4]:  # limitamos a 4 NS
+        for ip in auth_ips[:4]:  #
             rr = query_authoritative(dominio, typ, ip)
             if rr:
                 vistas.extend(flatten_rr_text(rr))
@@ -161,7 +166,7 @@ def salud_dns(dominio: str) -> Dict[str, Any]:
 
     # Wildcard (comodín): probar subdominio aleatorio
     test_sub = f"{random_label()}.{dominio}".rstrip(".")
-    rand_a, rand_err = resolve_rr(rec, test_sub, "A")
+    rand_a, _ = resolve_rr(rec, test_sub, "A")
     if rand_a and len(rand_a) > 0:
         hall.append(Hallazgo("wildcard", "warning",
                              f"Resuelve {test_sub} → {to_str_list(rand_a)} (posible comodín)"))
@@ -177,7 +182,7 @@ def salud_dns(dominio: str) -> Dict[str, Any]:
             hall.append(Hallazgo("ttls_desbalanceados", "info",
                                  f"TTLs variados en apex (min={tmin}, max={tmax})"))
 
-    # CNAME colgante 
+    # CNAME colgante
     if cname_rr:
         try:
             target = str(cname_rr[0].target).rstrip(".")
@@ -204,11 +209,8 @@ def salud_dns(dominio: str) -> Dict[str, Any]:
     log_event({"tool": "salud_dns", "dominio": dominio, "dur_ms": int(1000*(time.time()-start)), "out_size": len(json.dumps(out))})
     return out
 
-# correo_politicas(dominio) 
-
-@mcp.tool()
+@mcp.tool(description="Revisa MX/SPF/DMARC y reporta faltantes o configuraciones débiles.")
 def correo_politicas(dominio: str) -> Dict[str, Any]:
-
     start = time.time()
     res = make_resolver()
     hall: List[Hallazgo] = []
@@ -257,21 +259,19 @@ def correo_politicas(dominio: str) -> Dict[str, Any]:
     log_event({"tool": "correo_politicas", "dominio": dominio, "dur_ms": int(1000*(time.time()-start)), "out_size": len(json.dumps(out))})
     return out
 
-# estado_dnssec(dominio) 
-
 def parent_zone(name: dns.name.Name) -> dns.name.Name:
     return dns.name.Name(name.labels[1:])
 
-@mcp.tool()
+@mcp.tool(description="Verifica DS/DNSKEY/RRSIG y valida firma de SOA contra DNSKEY (si es posible).")
 def estado_dnssec(dominio: str) -> Dict[str, Any]:
-
     start = time.time()
     res = make_resolver()
     detalles: List[str] = []
     hall: List[Hallazgo] = []
 
     name = dns.name.from_text(dominio)
-    # 1) DS en el padre
+
+    # DS en el padre
     tiene_ds = False
     try:
         ds_rr, _ = resolve_rr(res, dominio, "DS")
@@ -283,7 +283,7 @@ def estado_dnssec(dominio: str) -> Dict[str, Any]:
     except Exception as e:
         detalles.append(f"Error consultando DS: {e}")
 
-    # 2) DNSKEY en el apex
+    #  DNSKEY en el apex
     dnskey_rr, _ = resolve_rr(res, dominio, "DNSKEY")
     algos = []
     if dnskey_rr:
@@ -296,7 +296,7 @@ def estado_dnssec(dominio: str) -> Dict[str, Any]:
     else:
         hall.append(Hallazgo("sin_dnskey", "error", "No se pudo obtener DNSKEY del dominio."))
 
-    # Verificación práctica DS <-> DNSKEY (coincidencia de huellas)
+    # Verificación DS <-> DNSKEY (huellas)
     if tiene_ds and dnskey_rr:
         try:
             matches = 0
@@ -311,33 +311,54 @@ def estado_dnssec(dominio: str) -> Dict[str, Any]:
         except Exception as e:
             detalles.append(f"Error comparando DS/DNSKEY: {e}")
 
-    # Validar firma de SOA con DNSKEY (si hay RRSIG)
+    # Validar firma de SOA usando autoritativos 
     soa_signed_ok: Optional[bool] = None
-    try:
-        # obtener RRsets con firmas (want_dnssec)
-        q = dns.message.make_query(dominio, "SOA", want_dnssec=True)
-        ans = dns.query.udp(q, make_resolver().nameservers[0], timeout=3.0)
-        rrset_soa = None
-        rrsig_soa = None
-        for rrset in ans.answer:
-            if rrset.rdtype == dns.rdatatype.SOA:
-                rrset_soa = rrset
-            if rrset.rdtype == dns.rdatatype.RRSIG and rrset.covers() == dns.rdatatype.SOA:
-                rrsig_soa = rrset
-        if rrset_soa and rrsig_soa and dnskey_rr:
-            # construir keyring
-            keyring = {}
-            for k in dnskey_rr:
-                name_text = dominio.rstrip(".")
-                keyring[(dns.name.from_text(name_text), k.key_tag(), k.algorithm)] = k
-            dns.dnssec.validate(rrset_soa, rrsig_soa, keyring)
-            soa_signed_ok = True
-            detalles.append("SOA validado contra RRSIG y DNSKEY (OK).")
-        else:
-            detalles.append("No se pudo validar SOA (faltan RRSIG/DNSKEY en respuesta autoritativa).")
-    except Exception as e:
-        soa_signed_ok = False
-        hall.append(Hallazgo("firma_soa_invalida", "warning", f"No se validó SOA: {e}"))
+    auth_ips = get_authoritative_ns_ips(dominio)
+    if auth_ips and dnskey_rr:
+        for ip in auth_ips[:4]:
+            try:
+                q = dns.message.make_query(dominio, "SOA", want_dnssec=True)
+                q.flags &= ~dns.flags.RD
+                ans = dns.query.udp(q, ip, timeout=3.0)
+                # si truncado o sin firmas, intentar TCP
+                need_tcp = bool(ans.flags & dns.flags.TC)
+                rrset_soa = None
+                rrsig_soa = None
+                for rrset in ans.answer:
+                    if rrset.rdtype == dns.rdatatype.SOA:
+                        rrset_soa = rrset
+                    if rrset.rdtype == dns.rdatatype.RRSIG and rrset.covers() == dns.rdatatype.SOA:
+                        rrsig_soa = rrset
+                if need_tcp or not (rrset_soa and rrsig_soa):
+                    try:
+                        ans = dns.query.tcp(q, ip, timeout=3.0)
+                        rrset_soa = None
+                        rrsig_soa = None
+                        for rrset in ans.answer:
+                            if rrset.rdtype == dns.rdatatype.SOA:
+                                rrset_soa = rrset
+                            if rrset.rdtype == dns.rdatatype.RRSIG and rrset.covers() == dns.rdatatype.SOA:
+                                rrsig_soa = rrset
+                    except Exception:
+                        pass
+
+                if rrset_soa and rrsig_soa:
+                    keyring = {}
+                    zone_name = dns.name.from_text(dominio.rstrip("."))
+                    for k in dnskey_rr:
+                        keyring[(zone_name, k.key_tag(), k.algorithm)] = k
+                    dns.dnssec.validate(rrset_soa, rrsig_soa, keyring)
+                    soa_signed_ok = True
+                    detalles.append("SOA validado contra RRSIG y DNSKEY (autoritativo).")
+                    break
+            except Exception as e:
+                # Intentar con el siguiente autoritativo
+                detalles.append(f"Autoritativo {ip}: {e}")
+
+        if soa_signed_ok is None:
+            detalles.append("No se pudo validar SOA (faltan RRSIG/DNSKEY en autoritativo o respuestas incompletas).")
+    else:
+        detalles.append("Validación práctica de SOA no concluyente (sin autoritativos o sin DNSKEY).")
 
     resultado = ResultadoDNSSEC(
         dominio=dominio,
@@ -351,11 +372,8 @@ def estado_dnssec(dominio: str) -> Dict[str, Any]:
     log_event({"tool": "estado_dnssec", "dominio": dominio, "dur_ms": int(1000*(time.time()-start)), "out_size": len(json.dumps(out))})
     return out
 
-# propagacion(dominio, resolutores=[...]) 
-
-@mcp.tool()
+@mcp.tool(description="Compara respuestas entre resolutores (A/AAAA/NS) para ver propagación.")
 def propagacion(dominio: str, resolutores: Optional[List[str]] = None) -> Dict[str, Any]:
-
     start = time.time()
     if not resolutores:
         resolutores = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
@@ -375,13 +393,11 @@ def propagacion(dominio: str, resolutores: Optional[List[str]] = None) -> Dict[s
             "TXT_sample": txt_sample,
         }
 
-    # Diferencias simples por tipo
     diffs: Dict[str, Any] = {}
     for typ in ("A", "AAAA", "NS"):
         sets = {ip: set(respuestas[ip][typ]) for ip in respuestas}
         universe = set().union(*sets.values()) if sets else set()
         per_ip = {ip: sorted(list(universe - sets[ip])) for ip in respuestas}
-        # ip -> qué le "falta" respecto al conjunto unión
         diffs[typ] = per_ip
 
     resultado = ResultadoPropagacion(
