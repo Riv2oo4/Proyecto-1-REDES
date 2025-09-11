@@ -5,3 +5,5 @@ cryptography>=42.0.0
 httpx>=0.24.0
 mcp[cli]
 uvicorn
+mcp>=1.13.0
+anyio>=4.4.0
