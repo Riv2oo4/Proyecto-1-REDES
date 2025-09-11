@@ -25,6 +25,18 @@ WORKSPACE_DIR.mkdir(exist_ok=True)
 LOG_FILE = BASE_DIR / "chat_log.jsonl"
 MCP_SESSION_ID: Optional[str] = None  #
 REMOTE_TIMEOUT = 15   
+WIRE_LOG = BASE_DIR / "wire_log.ndjson"
+
+def _wire_log(event: str, data: Dict[str, Any]):
+    try:
+        with open(WIRE_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.now().isoformat(),
+                "event": event,
+                **data
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 def _remote_headers(extra: Dict[str, str] = None) -> Dict[str, str]:
     h = {
@@ -46,23 +58,59 @@ def mcp_request(method: str, params: Dict[str, Any]) -> requests.Response:
         "method": method,
         "params": params
     }
-    return requests.post(
+
+    _wire_log("jsonrpc.request", {
+        "url": f"{REMOTE_SERVER_URL}/mcp",
+        "headers": _remote_headers(),           
+        "body": payload
+    })
+
+    resp = requests.post(
         f"{REMOTE_SERVER_URL}/mcp",
         json=payload,
         headers=_remote_headers(),
         timeout=REMOTE_TIMEOUT
     )
+
+    try:
+        ct = (resp.headers.get("Content-Type") or "")
+        body_text = resp.text
+        base = {
+            "status": resp.status_code,
+            "ct": ct,
+            "headers": dict(resp.headers),
+        }
+
+        if "text/event-stream" in ct.lower():
+            chunks = []
+            for ln in body_text.splitlines():
+                if ln.startswith("data:"):
+                    payload_line = ln[len("data:"):].strip()
+                    if payload_line and payload_line != "[DONE]":
+                        try:
+                            chunks.append(json.loads(payload_line))
+                        except Exception:
+                            chunks.append({"raw": payload_line})
+            _wire_log("jsonrpc.response.stream", {**base, "chunks": chunks})
+        else:
+            try:
+                _wire_log("jsonrpc.response", {**base, "body_json": resp.json()})
+            except Exception:
+                _wire_log("jsonrpc.response", {**base, "body_text": body_text[:20000]})
+    except Exception as e:
+        _wire_log("jsonrpc.response.error", {"error": str(e)})
+
+    return resp
+
 def _parse_mcp_response(resp: requests.Response) -> Dict[str, Any]:
     ct = (resp.headers.get("Content-Type") or "").lower()
 
-    # 1) JSON directo
     if "application/json" in ct:
         try:
             return {"ok": True, "data": resp.json()}
         except Exception as e:
             return {"ok": False, "error": f"No JSON válido: {e}. Body={resp.text[:200]}"}
 
-    # 2) SSE (cada línea con 'data: { ... }')
     if "text/event-stream" in ct:
         try:
             lines = resp.text.splitlines()
@@ -84,7 +132,6 @@ def _parse_mcp_response(resp: requests.Response) -> Dict[str, Any]:
         except Exception as e:
             return {"ok": False, "error": f"Error parseando SSE: {e}"}
 
-    # 3) Otro tipo
     body_snip = resp.text[:200] if resp.text else "<vacío>"
     return {"ok": False, "error": f"Content-Type inesperado '{ct}'. Body={body_snip}"}
 
